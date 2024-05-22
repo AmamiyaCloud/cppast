@@ -150,6 +150,52 @@ void detail::for_each_file(const libclang_compilation_database& database, void* 
 
 namespace
 {
+bool is_MSVC_flag(const detail::cxstring& str)
+{
+    return str.length() > 1u && str[0] == '/';
+}
+
+const char* find_MSVC_flag_arg_sep(const std::string& last_flag)
+{
+    if (last_flag[1] == 'D')
+        // no  separator, equal is part of the arg
+            return nullptr;
+    return std::strchr(last_flag.c_str(), ':');
+}
+
+template <typename Func>
+void parse_MSVC_flags(CXCompileCommand cmd, Func callback)
+{
+    auto no_args = clang_CompileCommand_getNumArgs(cmd);
+    for (auto i = 1u /* 0 is compiler executable */; i != no_args; ++i)
+    {
+        detail::cxstring str(clang_CompileCommand_getArg(cmd, i));
+        if (is_MSVC_flag(str))
+        {
+            // process last flag
+            std::string args;
+            std::string flags = str.std_str();
+            
+            if (auto ptr = find_MSVC_flag_arg_sep(flags))
+            {
+                auto pos = std::size_t(ptr - flags.c_str());
+                ++ptr;
+                while (*ptr)
+                    args += *ptr++;
+                flags.erase(pos);
+            }
+            else if (flags.size() > 2u)
+            {
+                // assume two character flag
+                args = flags.substr(2u);
+                flags.erase(2u);
+            }
+
+            callback(std::move(flags), std::move(args));
+        }
+    }
+}
+
 bool is_flag(const detail::cxstring& str)
 {
     return str.length() > 1u && str[0] == '-';
@@ -234,7 +280,53 @@ cppast::libclang_compile_config::libclang_compile_config(
         use_c_ = (exe.find("++", 0) == std::string::npos);
 
         auto dir = detail::cxstring(clang_CompileCommand_getDirectory(cmd));
-        parse_flags(cmd, [&](std::string flag, std::string args) {
+
+        auto no_args = clang_CompileCommand_getNumArgs(cmd);
+        bool is_MSVC = false;
+        if (no_args > 1)
+        {
+            detail::cxstring str(clang_CompileCommand_getArg(cmd, 1));
+            is_MSVC = str == "--driver-mode=cl";
+        }
+        if (is_MSVC)
+        {
+            parse_MSVC_flags(cmd, [&](std::string flag, std::string args) {
+                flag[0] = '-';
+                if (flag == "-I")
+                    add_flag(std::move(flag) + get_full_path(dir, args));
+                else if (flag == "-isystem")
+                    add_flag(std::move(flag) + get_full_path(dir, args));
+                else if (flag == "-D" || flag == "-U")
+                {
+                    // preprocessor options
+                    for (auto c : args)
+                        if (c == '"')
+                            flag += "\\\"";
+                        else
+                            flag += c;
+                    add_flag(std::move(flag));
+                }
+                else if (flag == "-std")
+                {
+                    use_c_ = (args.find("++") == std::string::npos);
+                    add_flag(std::move(flag) + "=" + std::move("c++2c"));
+                }
+                else if (flag == "-f")
+                    // other options
+                    add_flag(std::move(flag) + std::move(args));
+                else if (flag == "-x")
+                {
+                    // language
+                    if (args == "c")
+                        use_c_ = true;
+                    else
+                        use_c_ = false;
+                }
+            });
+        }
+        else
+        {
+            parse_flags(cmd, [&](std::string flag, std::string args) {
             if (flag == "-I")
                 add_flag(std::move(flag) + get_full_path(dir, args));
             else if (flag == "-isystem")
@@ -256,16 +348,17 @@ cppast::libclang_compile_config::libclang_compile_config(
             }
             else if (flag == "-f")
                 // other options
-                add_flag(std::move(flag) + std::move(args));
-            else if (flag == "-x")
-            {
-                // language
-                if (args == "c")
-                    use_c_ = true;
-                else
-                    use_c_ = false;
-            }
-        });
+                    add_flag(std::move(flag) + std::move(args));
+                else if (flag == "-x")
+                {
+                    // language
+                    if (args == "c")
+                        use_c_ = true;
+                    else
+                        use_c_ = false;
+                }
+            });
+        }
     }
 }
 
