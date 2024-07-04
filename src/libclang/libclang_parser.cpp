@@ -148,6 +148,22 @@ void detail::for_each_file(const libclang_compilation_database& database, void* 
     }
 }
 
+void detail::m_for_each_file(const libclang_compilation_database& database, void* user_data,
+                           void (*callback)(void*, std::string, std::string))
+{
+    cxcompile_commands commands(
+        clang_CompilationDatabase_getAllCompileCommands(database.database_));
+    auto no = clang_CompileCommands_getSize(commands.get());
+    for (auto i = 0u; i != no; ++i)
+    {
+        auto cmd = clang_CompileCommands_getCommand(commands.get(), i);
+
+        auto dir = cxstring(clang_CompileCommand_getDirectory(cmd));
+        auto fileName = cxstring(clang_CompileCommand_getFilename(cmd)).std_str();
+        callback(user_data, fileName, get_full_path(dir, fileName));
+    }
+}
+
 namespace
 {
 bool is_MSVC_flag(const detail::cxstring& str)
@@ -157,7 +173,7 @@ bool is_MSVC_flag(const detail::cxstring& str)
 
 const char* find_MSVC_flag_arg_sep(const std::string& last_flag)
 {
-    if (last_flag[1] == 'D')
+    if (last_flag[1] == 'I')
         // no  separator, equal is part of the arg
             return nullptr;
     return std::strchr(last_flag.c_str(), ':');
@@ -796,11 +812,19 @@ try
         file << preprocessed.source;
     }
 
-    // parse
-    auto tu   = get_cxunit(logger(), pimpl_->index, config, path.c_str(), preprocessed.source);
-    auto file = clang_getFile(tu.get(), path.c_str());
+    // support header files
+    std::string processedPath = path;
+    if (processedPath.back() == 'h' && (processedPath.size() > 4 && processedPath[processedPath.size() - 4] != '.'))
+    {
+        processedPath += "pp";
+    }
 
-    cpp_file::builder builder(detail::cxstring(clang_getFileName(file)).std_str());
+    // parse
+    auto tu   = get_cxunit(logger(), pimpl_->index, config, processedPath.c_str(), preprocessed.source);
+    auto file = clang_getFile(tu.get(), processedPath.c_str());
+    auto fileName = detail::cxstring(clang_getFileName(file)).std_str();
+
+    cpp_file::builder builder(fileName == path ? fileName : path);
     auto              macro_iter   = preprocessed.macros.begin();
     auto              include_iter = preprocessed.includes.begin();
 
@@ -811,7 +835,7 @@ try
                                   type_safe::ref(idx),
                                   detail::comment_context(preprocessed.comments),
                                   false};
-    detail::visit_tu(tu, path.c_str(), [&](const CXCursor& cur) {
+    detail::visit_tu(tu, processedPath.c_str(), [&](const CXCursor& cur) {
         if (clang_getCursorKind(cur) == CXCursor_InclusionDirective)
         {
             if (!preprocessed.includes.empty())

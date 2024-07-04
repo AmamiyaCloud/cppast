@@ -27,6 +27,8 @@ namespace detail
 
     void for_each_file(const libclang_compilation_database& database, void* user_data,
                        void (*callback)(void*, std::string));
+    void m_for_each_file(const libclang_compilation_database& database, void* user_data,
+                       void (*callback)(void*, std::string, std::string));
 } // namespace detail
 
 /// The exception thrown when a fatal parse error occurs.
@@ -81,6 +83,8 @@ private:
     friend libclang_compile_config;
     friend void detail::for_each_file(const libclang_compilation_database& database,
                                       void* user_data, void (*callback)(void*, std::string));
+    friend void detail::m_for_each_file(const libclang_compilation_database& database, void* user_data,
+                       void (*callback)(void*, std::string, std::string));
 };
 
 /// Compilation config for the [cppast::libclang_parser]().
